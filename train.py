@@ -26,8 +26,8 @@ config = {
     "imgWidth": 135
 }
 
-def load_images():
-    dataDir = "/home/media/simtoon/DATA/dataset/dataset/images/processed/"
+def load_images(dataDir):
+    # dataDir = "/home/media/simtoon/DATA/dataset/dataset/images/processed/"
     dataDir = pathlib.Path("data")
     imageCount = len(list(dataDir.glob("*.jpg")))
     print(imageCount)
@@ -165,7 +165,7 @@ wandb.finish()
 
 # let's roll, m'fucker
 setup_wandb()
-dataDir = load_images()
+dataDir = load_images(dataDir="")
 trainDS, valDS, classNames, numClasses = setup_datasets(dataDir)
 trainDS, valDS = setup_autotune(trainDS, valDS)
 dataAugmentation = augment()
