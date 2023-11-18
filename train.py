@@ -9,59 +9,65 @@ from tensorflow.keras.models import Sequential
 import datetime
 import os
 from wandb.keras import WandbMetricsLogger, WandbModelCheckpoint
+import random
 
 os.environ["TF_CPP_MIN_LOG_LEVEL"] = "3" # to shut tf up
 
 # hyperparams
 config = {
-    "batch_size": 64,
+    "batch_size": 16,
     "epochs": 10,
-    "learning_rate": 0.001,
+    "learning_rate": 0.00001,
     "dropout": 0.2,
     "activation": "relu",
     "optimizer": "adam",
     "loss": "sparse_categorical_crossentropy",
     "metrics": ["accuracy"],
-    "imgHeight": 240,
-    "imgWidth": 135
+    "imgHeight": 135,
+    "imgWidth": 240,
+    "padding": "valid"
 }
 
 def load_images(dataDir):
-    # dataDir = "/home/media/simtoon/DATA/dataset/dataset/images/processed/"
-    dataDir = pathlib.Path("data")
-    imageCount = len(list(dataDir.glob("*.jpg")))
-    print(imageCount)
+    dataDir = pathlib.Path(dataDir)
+    print(f"Data directory: {dataDir}")
+    check_dataset(dataDir)
 
     return dataDir
 
 def check_dataset(dataDir):
-    niche = list(dataDir.glob("niche/*"))
-    nonNiche = list(dataDir.glob("non_niche/*"))
-    print(len(niche))
-    print(len(nonNiche))
+    niche = list(dataDir.glob("like/*"))
+    nonNiche = list(dataDir.glob("dislike/*"))
+    print(f"niche: {len(niche)}")
+    print(f"non-niche: {len(nonNiche)}")
 
 def setup_wandb():
-    wandb.init(project="niche-classifier", config=config)
+    wandb.init(project="niche-classifier", config=config, entity="simtoonia")
 
 def setup_datasets(dataDir):
-    trainDS = tf.keras.utils.image_dataset_from_directory(
+    trainDS, valDS = tf.keras.preprocessing.image_dataset_from_directory(
         dataDir,
         validation_split=0.15,
-        subset="training",
+        subset="both",
+        shuffle=True,
         seed=69,
+        label_mode="int",
+        color_mode="rgb",
         image_size=(config["imgHeight"], config["imgWidth"]),
-        batch_size=config["batch_size"])
+        batch_size=config["batch_size"]
+    )
 
-    valDS = tf.keras.utils.image_dataset_from_directory(
-        dataDir,
-        validation_split=0.15,
-        subset="validation",
-        seed=69,
-        image_size=(config["imgHeight"], config["imgWidth"]),
-        batch_size=config["batch_size"])
 
     classNames = trainDS.class_names
     numClasses = len(classNames)
+
+    plt.figure(figsize=(10, 10))
+    for images, labels in trainDS.take(1):
+        for i in range(9):
+            ax = plt.subplot(3, 3, i + 1)
+            plt.imshow(images[i].numpy().astype("uint8"))
+            plt.title(classNames[int(labels[i])])
+            plt.axis("off")
 
     return trainDS, valDS, classNames, numClasses
 
@@ -94,22 +100,33 @@ def augment():
 def setup_model(numClasses, dataAugmentation):
     model = Sequential([
         dataAugmentation,
-        layers.Rescaling(1./255, input_shape=(config["imgHeight"], config["imgWidth"], 3)),
+        layers.Conv2D(16, 3, padding=config["padding"], activation=config["activation"], input_shape=(config["imgHeight"], config["imgWidth"], 3)),
+        layers.BatchNormalization(),
         layers.Conv2D(16, 3, padding=config["padding"], activation=config["activation"]),
+        layers.BatchNormalization(),
         layers.MaxPooling2D(),
         layers.Conv2D(32, 3, padding=config["padding"], activation=config["activation"]),
+        layers.BatchNormalization(),
         layers.MaxPooling2D(),
         layers.Conv2D(64, 3, padding=config["padding"], activation=config["activation"]),
+        layers.BatchNormalization(),
         layers.MaxPooling2D(),
         layers.Conv2D(128, 3, padding=config["padding"], activation=config["activation"]),
+        layers.BatchNormalization(),
         layers.MaxPooling2D(),
         layers.Conv2D(256, 3, padding=config["padding"], activation=config["activation"]),
+        layers.BatchNormalization(),
+        layers.Conv2D(256, 3, padding=config["padding"], activation=config["activation"]),
+        layers.BatchNormalization(),
         layers.MaxPooling2D(),
         layers.Dropout(config["dropout"]),
         layers.Flatten(),
-        layers.Dense(128, activation=config["activation"]),
+        layers.Dense(256, activation="softmax"),
+        layers.Dense(128, activation="softmax"),
         layers.Dense(numClasses)
     ])
+
+    model.build((None, config["imgHeight"], config["imgWidth"], 3))
 
     model.compile(optimizer=config["optimizer"],
                 loss=config["loss"],
@@ -119,6 +136,12 @@ def setup_model(numClasses, dataAugmentation):
 
     return model
 
+def scheduler(epoch, lr):
+    if epoch < 3:
+        return lr
+    else:
+        return lr * tf.math.exp(-0.1)
+
 def train(model, trainDS, valDS):
     trainedModel = model.fit(
         trainDS,
@@ -126,9 +149,10 @@ def train(model, trainDS, valDS):
         epochs=config["epochs"],
         callbacks=[
             WandbMetricsLogger(log_freq=10),
-            WandbModelCheckpoint("ckpt/niche-classifier-{epoch}.h5"),
-            tf.keras.callbacks.ModelCheckpoint(filepath="ckpt/niche-classifier-{epoch}.h5", save_best_only=True, save_weights_only=True, verbose=1, save_freq="epoch"),
-            tf.keras.callbacks.TensorBoard(log_dir="logs/", histogram_freq=1)
+            WandbModelCheckpoint("ckpt/niche-classifier-{epoch}.keras"),
+            tf.keras.callbacks.ModelCheckpoint(filepath="ckpt/niche-classifier-{epoch}.keras", save_best_only=True, save_weights_only=True, verbose=1, save_freq="epoch"),
+            tf.keras.callbacks.TensorBoard(log_dir="logs/", histogram_freq=1),
+            tf.keras.callbacks.LearningRateScheduler(scheduler)
             ]
         )
 
@@ -156,8 +180,8 @@ def report(trainedModel, model, epochs):
 
     wandb.log({"top_acc": top_acc, "top_val_acc": top_val_acc, "min_loss": min_loss, "min_val_loss": min_val_loss, "epochs": epochs})
 
-    model.save("model.h5")
-    model.save_weights("model_weights.h5")
+    model.save("model.keras")
+    model.save_weights("model_weights.keras")
 
 
 wandb.finish()
@@ -165,10 +189,37 @@ wandb.finish()
 
 # let's roll, m'fucker
 setup_wandb()
-dataDir = load_images(dataDir="")
+dataDir = load_images(dataDir="/home/simtoon/git/niche")
 trainDS, valDS, classNames, numClasses = setup_datasets(dataDir)
+imageBatch, labelsBatch = next(iter(trainDS))
+firstImage = imageBatch[0]
+print(np.min(firstImage), np.max(firstImage))
+trainDS = normalize(trainDS)
+imageBatch, labelsBatch = next(iter(trainDS))
+firstImage = imageBatch[0]
+print(np.min(firstImage), np.max(firstImage))
 trainDS, valDS = setup_autotune(trainDS, valDS)
 dataAugmentation = augment()
+
+def display_images(dataset, title, num_images=3):
+    plt.figure(figsize=(20, 7))
+    for images, labels in dataset.take(1):
+        random_indices = random.sample(range(images.shape[0]), num_images)
+        for i, index in enumerate(random_indices):
+            ax = plt.subplot(1, num_images, i + 1)
+            if (dataset == trainDS):
+                plt.imshow(images[index].numpy().astype("uint8") * 255)
+            else:
+                plt.imshow(images[index].numpy().astype("uint8"))
+            # print filename, too, from the prefetch dataset
+            plt.title(f"{title}: {classNames[int(labels[index].numpy())]}\nFilename: ")
+            plt.axis("off")
+    plt.tight_layout()
+    plt.show()
+
+display_images(trainDS, "train")
+display_images(valDS, "val")
+
 model = setup_model(numClasses, dataAugmentation)
 trainedModel = train(model, trainDS, valDS)
 report(trainedModel, model, config["epochs"])
